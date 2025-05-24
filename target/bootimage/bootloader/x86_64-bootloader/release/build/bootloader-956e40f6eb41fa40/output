@@ -1,0 +1,7 @@
+cargo:rerun-if-changed=/mnt/c/Users/cyber/Downloads/microkernel/optimal-rust-microkernel/Cargo.toml
+cargo:rustc-link-search=native=/mnt/c/Users/cyber/Downloads/microkernel/optimal-rust-microkernel/target/bootimage/bootloader/x86_64-bootloader/release/build/bootloader-956e40f6eb41fa40/out
+cargo:rustc-link-lib=static=kernel_bin-microkernel
+cargo:rerun-if-env-changed=KERNEL
+cargo:rerun-if-env-changed=KERNEL_MANIFEST
+cargo:rerun-if-changed=/mnt/c/Users/cyber/Downloads/microkernel/optimal-rust-microkernel/target/x86_64-microkernel/debug/microkernel
+cargo:rerun-if-changed=build.rs
