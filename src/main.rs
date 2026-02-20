@@ -18,6 +18,7 @@ mod allocator;
 mod capability;
 mod ipc;
 mod task;
+mod wasm;
 
 entry_point!(kernel_main);
 
@@ -44,135 +45,82 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     capability::init();
     ipc::init();
 
-    run_poc_demo();
+    run_wasm_demo();
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Print to both VGA screen and QEMU serial (stdout when -serial stdio).
 macro_rules! log {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         println!($($arg)*);
         serial_println!($($arg)*);
-    };
+    }};
 }
 
-fn granted(test: u8, desc: &str) {
+fn _granted(test: u8, desc: &str) {
     log!("[TEST {}] {} => GRANTED", test, desc);
 }
 
-fn denied(test: u8, desc: &str, reason: &str) {
+fn _denied(test: u8, desc: &str, reason: &str) {
     log!("[TEST {}] {} => DENIED  ({})", test, desc, reason);
 }
 
-// ── POC demo ─────────────────────────────────────────────────────────────────
+// ── Wasm Microvisor demo ───────────────────────────────────────────────────
 
-fn run_poc_demo() -> ! {
+fn run_wasm_demo() -> ! {
     use alloc::vec;
-    use capability::{Capability, create_capability, can_read_memory, can_write_memory,
-                     can_send_to, can_spawn};
-    use task::{spawn_agent, agent_capabilities, agent_pid};
-    use ipc::{create_endpoint, send_message, receive_message, ProcessId};
+    use capability::{Capability, create_capability};
+    use task::spawn_agent;
 
     log!("");
     log!("============================================================");
-    log!("  Rust Microkernel — AI Agent Sandbox POC");
+    log!("  Rust Microkernel — OpenClaw Wasm Sandbox POC");
     log!("============================================================");
     log!("");
 
-    // ── Agent A: data_processor ───────────────────────────────────────────
-    // Gets: read access to 0x1000–0x1FFF, can send to agent B (spawned next)
-    // Does NOT get: write access, spawn capability
-    log!("[SETUP] Spawning agent_a (data_processor)");
+    log!("[SETUP] Initializing Wasm Runtime...");
+    let runtime = wasm::WasmRuntime::new();
 
-    let cap_a_mem_read = create_capability(Capability::Memory {
-        base: 0x1000, size: 0x1000, read: true, write: false, execute: false,
-    });
-    // Process cap for B will be created after B is spawned; placeholder pid=2
-    // (agent IDs start at 1, so B will be AgentId(2))
-    let cap_a_ipc_send = create_capability(Capability::Process {
-        pid: 2, can_send: true, can_receive: false,
-    });
-    let agent_a = spawn_agent("data_processor", vec![cap_a_mem_read, cap_a_ipc_send]);
-    log!("  agent_a id={}", agent_pid(agent_a));
+    // In a real environment, we would load the Wasm binary from a filesystem
+    // or via a network boot. For this POC, we use a simple compiled Wasm array.
+    // This dummy Wasm does roughly: 
+    //   (module
+    //     (import "env" "debug_log" (func $log (param i32 i32)))
+    //     (memory (export "memory") 1)
+    //     (data (i32.const 0) "Hello from Wasm Sandbox!")
+    //     (func (export "_start")
+    //       (call $log (i32.const 0) (i32.const 24))
+    //     )
+    //   )
+    let dummy_wasm: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x00, 
+        0x60, 0x00, 0x00, 0x02, 0x13, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x09, 0x64, 0x65, 0x62, 0x75, 0x67, 
+        0x5f, 0x6c, 0x6f, 0x67, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x05, 0x06, 0x01, 0x01, 0x01, 0x01, 
+        0x01, 0x01, 0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x0a, 
+        0x01, 0x08, 0x00, 0x41, 0x00, 0x41, 0x18, 0x10, 0x00, 0x0b, 0x0b, 0x1f, 0x01, 0x00, 0x41, 0x00, 
+        0x0b, 0x18, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x66, 0x72, 0x6f, 0x6d, 0x20, 0x57, 0x61, 0x73, 
+        0x6d, 0x20, 0x53, 0x61, 0x6e, 0x64, 0x62, 0x6f, 0x78, 0x21,
+    ];
 
-    // ── Agent B: output_handler ───────────────────────────────────────────
-    // Gets: write access to 0x2000–0x2FFF, can receive from agent A
-    // Does NOT get: send capability, spawn capability
-    log!("[SETUP] Spawning agent_b (output_handler)");
+    log!("[SETUP] Spawning OpenClaw Core Agent...");
+    
+    // Give the core agent capability to spawn other agents (skills)
+    let cap_spawn = create_capability(Capability::Spawn { max_children: 10 });
+    let core_agent = spawn_agent("openclaw_core", vec![cap_spawn]);
+    let pid = task::agent_pid(core_agent);
 
-    let cap_b_mem_write = create_capability(Capability::Memory {
-        base: 0x2000, size: 0x1000, read: false, write: true, execute: false,
-    });
-    let cap_b_ipc_recv = create_capability(Capability::Process {
-        pid: agent_pid(agent_a), can_send: false, can_receive: true,
-    });
-    let agent_b = spawn_agent("output_handler", vec![cap_b_mem_write, cap_b_ipc_recv]);
-    log!("  agent_b id={}", agent_pid(agent_b));
+    log!("  Agent 'openclaw_core' created with PID: {}", pid);
+    log!("[EXEC] Executing Wasm binary...");
 
-    // Set up IPC endpoints
-    let pid_a = ProcessId(agent_pid(agent_a));
-    let pid_b = ProcessId(agent_pid(agent_b));
-    create_endpoint(pid_a).ok();
-    create_endpoint(pid_b).ok();
-
-    log!("");
-    log!("--- Running enforcement tests ---");
-    log!("");
-
-    // ── Test 1: agent_a reads from its allowed memory region ─────────────
-    let caps_a = agent_capabilities(agent_a);
-    if can_read_memory(&caps_a, 0x1500) {
-        granted(1, "agent_a reads  0x1500 (within  0x1000–0x1FFF)");
-    } else {
-        denied(1, "agent_a reads  0x1500", "no Memory{read} cap");
+    match runtime.execute_module(dummy_wasm, pid) {
+        Ok(_) => { log!("[EXEC] Module executed successfully."); }
+        Err(e) => { log!("[ERROR] Module execution failed: {}", e); }
     }
 
-    // ── Test 2: agent_a attempts write (no write cap) ─────────────────────
-    if can_write_memory(&caps_a, 0x1500) {
-        granted(2, "agent_a writes 0x1500");
-    } else {
-        denied(2, "agent_a writes 0x1500 (within  0x1000–0x1FFF)", "Memory cap has write=false");
-    }
-
-    // ── Test 3: agent_a sends IPC to agent_b ─────────────────────────────
-    let msg_payload: alloc::vec::Vec<u8> = alloc::vec![b'H', b'e', b'l', b'l', b'o'];
-    if can_send_to(&caps_a, agent_pid(agent_b)) {
-        // Kernel allows the send — perform it
-        match send_message(pid_a, pid_b, msg_payload, alloc::vec![]) {
-            Ok(_)  => granted(3, "agent_a sends IPC msg to agent_b"),
-            Err(e) => denied(3, "agent_a sends IPC msg to agent_b", e),
-        }
-    } else {
-        denied(3, "agent_a sends IPC msg to agent_b", "no Process{can_send} cap");
-    }
-
-    // ── Test 4: agent_b receives the message ─────────────────────────────
-    match receive_message(pid_b) {
-        Some(msg) => granted(4, "agent_b receives IPC msg from agent_a"),
-        None      => denied(4, "agent_b receives IPC msg", "no message in queue"),
-    }
-
-    // ── Test 5: agent_a attempts to spawn a child agent (no Spawn cap) ───
-    if can_spawn(&caps_a) {
-        granted(5, "agent_a spawns child agent");
-    } else {
-        denied(5, "agent_a spawns child agent", "no Spawn capability");
-    }
-
-    // ── Test 6: agent_b attempts to send (its Process cap has can_send=false) ─
-    let caps_b = agent_capabilities(agent_b);
-    if can_send_to(&caps_b, agent_pid(agent_a)) {
-        granted(6, "agent_b sends IPC msg to agent_a");
-    } else {
-        denied(6, "agent_b sends IPC msg to agent_a", "Process cap has can_send=false");
-    }
-
-    // ── Summary ───────────────────────────────────────────────────────────
     log!("");
     log!("============================================================");
-    log!("  Result: 3 GRANTED  |  3 DENIED");
-    log!("  Kernel capability enforcement: WORKING");
+    log!("  Microvisor Halted.");
     log!("============================================================");
     log!("");
 
