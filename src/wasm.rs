@@ -2,6 +2,8 @@ use alloc::{string::String, vec::Vec};
 use wasmi::{Engine, Linker, Module, Store, Memory, Extern};
 use crate::{println, serial_println};
 use crate::ipc::{ProcessId, send_message};
+use crate::task::{AgentId, agent_capabilities};
+use crate::capability::can_send_to;
 
 #[derive(Debug)]
 pub struct HostError(String);
@@ -35,7 +37,7 @@ impl WasmRuntime {
     pub fn execute_module(&self, wasm_bytes: &[u8], agent_pid: u64) -> Result<(), String> {
         let mut store = Store::new(&self.engine, WasmState { agent_pid });
         let module = Module::new(&self.engine, wasm_bytes)
-            .map_err(|e| alloc::format!("Failed to compile module: {}", e))?;
+            .map_err(|e| alloc::format!("Failed to compile module: {e}"))?;
 
         let mut linker = <Linker<WasmState>>::new(&self.engine);
 
@@ -51,7 +53,7 @@ impl WasmRuntime {
                 println!("[Wasm Agent {}] {}", caller.data().agent_pid, s);
             }
             Ok(())
-        })).map_err(|e| alloc::format!("Failed to define debug_log: {}", e))?;
+        })).map_err(|e| alloc::format!("Failed to define debug_log: {e}"))?;
 
         // Host Function: env.send_ipc(target_pid, msg_ptr, msg_len)
         linker.define("env", "send_ipc", wasmi::Func::wrap(&mut store, |mut caller: wasmi::Caller<'_, WasmState>, target_pid: u64, ptr: u32, len: u32| -> Result<u32, Trap> {
@@ -62,18 +64,25 @@ impl WasmRuntime {
             let sender_pid = ProcessId(caller.data().agent_pid);
             let recipient_pid = ProcessId(target_pid);
             
+            // SECURITY CHECK: Ensure Wasm Agent is granted the Capability to message target_pid!
+            let sender_caps = agent_capabilities(AgentId(sender_pid.0));
+            if !can_send_to(&sender_caps, target_pid) {
+                serial_println!("[SECURITY] Agent {} denied send to Agent {}", sender_pid.0, target_pid);
+                return Ok(2); // Permission Denied
+            }
+            
             // For now, we pass empty capabilities. In the future, the Wasm module could specify which capabilities to delegate.
             match send_message(sender_pid, recipient_pid, buf, Vec::new()) {
                 Ok(_) => Ok(0), // Success
                 Err(_) => Ok(1), // General Error
             }
-        })).map_err(|e| alloc::format!("Failed to define send_ipc: {}", e))?;
+        })).map_err(|e| alloc::format!("Failed to define send_ipc: {e}"))?;
 
         let instance = linker
             .instantiate(&mut store, &module)
-            .map_err(|e| alloc::format!("Failed to instantiate module: {}", e))?
+            .map_err(|e| alloc::format!("Failed to instantiate module: {e}"))?
             .start(&mut store)
-            .map_err(|e| alloc::format!("Failed to start module: {}", e))?;
+            .map_err(|e| alloc::format!("Failed to start module: {e}"))?;
 
         // Look for an "_start" or "main" function to execute
         let start_func = instance
@@ -83,10 +92,10 @@ impl WasmRuntime {
 
         let typed_func = start_func
             .typed::<(), ()>(&store)
-            .map_err(|e| alloc::format!("Start func has wrong signature: {}", e))?;
+            .map_err(|e| alloc::format!("Start func has wrong signature: {e}"))?;
 
         typed_func.call(&mut store, ())
-            .map_err(|e| alloc::format!("Execution failed: {}", e))?;
+            .map_err(|e| alloc::format!("Execution failed: {e}"))?;
 
         Ok(())
     }

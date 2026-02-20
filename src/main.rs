@@ -3,6 +3,7 @@
 #![feature(custom_test_frameworks)]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
+#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -56,14 +57,6 @@ macro_rules! log {
         println!($($arg)*);
         serial_println!($($arg)*);
     }};
-}
-
-fn _granted(test: u8, desc: &str) {
-    log!("[TEST {}] {} => GRANTED", test, desc);
-}
-
-fn _denied(test: u8, desc: &str, reason: &str) {
-    log!("[TEST {}] {} => DENIED  ({})", test, desc, reason);
 }
 
 // ── Wasm Microvisor demo ───────────────────────────────────────────────────

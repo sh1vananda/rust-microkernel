@@ -48,7 +48,7 @@ where
     let store = CAPABILITY_STORE.lock();
     caps.iter()
         .filter_map(|id| store.get(id))
-        .any(|cap| predicate(cap))
+        .any(predicate)
 }
 
 /// Convenience: check if a cap set grants readable memory access to `addr`.
