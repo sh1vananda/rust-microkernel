@@ -1,10 +1,13 @@
+use crate::capability::{validate_capability, CapabilityId};
+use crate::println;
 use alloc::{collections::BTreeMap, vec::Vec};
 use spin::Mutex;
-use crate::capability::{CapabilityId, validate_capability};
-use crate::println;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProcessId(pub u64);
+
+/// Reserved PID for the Kernel Supervisor — handles capability escalation requests.
+pub const KERNEL_SUPERVISOR_PID: ProcessId = ProcessId(0);
 
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -22,21 +25,33 @@ pub struct IpcEndpoint {
 static IPC_ENDPOINTS: Mutex<BTreeMap<ProcessId, IpcEndpoint>> = Mutex::new(BTreeMap::new());
 
 pub fn init() {
-    println!("IPC system initialized");
+    // Reserve PID 0 as the Kernel Supervisor endpoint
+    let mut endpoints = IPC_ENDPOINTS.lock();
+    endpoints.insert(
+        KERNEL_SUPERVISOR_PID,
+        IpcEndpoint {
+            messages: Vec::new(),
+            max_messages: 64,
+        },
+    );
+    println!("IPC system initialized (Kernel Supervisor at PID 0)");
 }
 
 pub fn create_endpoint(process_id: ProcessId) -> Result<(), &'static str> {
     let mut endpoints = IPC_ENDPOINTS.lock();
-    
+
     if endpoints.contains_key(&process_id) {
         return Err("Endpoint already exists");
     }
-    
-    endpoints.insert(process_id, IpcEndpoint {
-        messages: Vec::new(),
-        max_messages: 32,
-    });
-    
+
+    endpoints.insert(
+        process_id,
+        IpcEndpoint {
+            messages: Vec::new(),
+            max_messages: 32,
+        },
+    );
+
     Ok(())
 }
 
@@ -44,7 +59,7 @@ pub fn send_message(
     sender: ProcessId,
     recipient: ProcessId,
     data: Vec<u8>,
-    capabilities: Vec<CapabilityId>
+    capabilities: Vec<CapabilityId>,
 ) -> Result<(), &'static str> {
     // Validate capabilities
     for &cap_id in &capabilities {
@@ -52,20 +67,20 @@ pub fn send_message(
             return Err("Invalid capability");
         }
     }
-    
+
     let mut endpoints = IPC_ENDPOINTS.lock();
     let endpoint = endpoints.get_mut(&recipient).ok_or("No such endpoint")?;
-    
+
     if endpoint.messages.len() >= endpoint.max_messages {
         return Err("Message queue full");
     }
-    
+
     endpoint.messages.push(Message {
         sender,
         data,
         capabilities,
     });
-    
+
     Ok(())
 }
 

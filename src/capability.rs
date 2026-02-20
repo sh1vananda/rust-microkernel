@@ -1,19 +1,41 @@
+use crate::println;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::println;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CapabilityId(pub u64);
 
 #[derive(Debug, Clone)]
 pub enum Capability {
-    Memory  { base: usize, size: usize, read: bool, write: bool, execute: bool },
-    Interrupt { irq: u8 },
-    Port    { port: u16 },
-    Process { pid: u64, can_send: bool, can_receive: bool },
-    Spawn   { max_children: u32 },
+    Memory {
+        base: usize,
+        size: usize,
+        read: bool,
+        write: bool,
+        execute: bool,
+    },
+    Interrupt {
+        irq: u8,
+    },
+    Port {
+        port: u16,
+    },
+    Process {
+        pid: u64,
+        can_send: bool,
+        can_receive: bool,
+    },
+    Spawn {
+        max_children: u32,
+    },
     Network,
+    FileSystem {
+        path_prefix: String,
+        read: bool,
+        write: bool,
+    },
 }
 
 static CAPABILITY_STORE: Mutex<BTreeMap<CapabilityId, Capability>> = Mutex::new(BTreeMap::new());
@@ -47,33 +69,37 @@ where
     F: Fn(&Capability) -> bool,
 {
     let store = CAPABILITY_STORE.lock();
-    caps.iter()
-        .filter_map(|id| store.get(id))
-        .any(predicate)
+    caps.iter().filter_map(|id| store.get(id)).any(predicate)
 }
 
 /// Convenience: check if a cap set grants readable memory access to `addr`.
 pub fn can_read_memory(caps: &[CapabilityId], addr: usize) -> bool {
-    find_capability(caps, |c| matches!(c,
-        Capability::Memory { base, size, read: true, .. }
-        if addr >= *base && addr < *base + *size
-    ))
+    find_capability(caps, |c| {
+        matches!(c,
+            Capability::Memory { base, size, read: true, .. }
+            if addr >= *base && addr < *base + *size
+        )
+    })
 }
 
 /// Convenience: check if a cap set grants writable memory access to `addr`.
 pub fn can_write_memory(caps: &[CapabilityId], addr: usize) -> bool {
-    find_capability(caps, |c| matches!(c,
-        Capability::Memory { base, size, write: true, .. }
-        if addr >= *base && addr < *base + *size
-    ))
+    find_capability(caps, |c| {
+        matches!(c,
+            Capability::Memory { base, size, write: true, .. }
+            if addr >= *base && addr < *base + *size
+        )
+    })
 }
 
 /// Convenience: check if a cap set allows sending to `target_pid`.
 pub fn can_send_to(caps: &[CapabilityId], target_pid: u64) -> bool {
-    find_capability(caps, |c| matches!(c,
-        Capability::Process { pid, can_send: true, .. }
-        if *pid == target_pid
-    ))
+    find_capability(caps, |c| {
+        matches!(c,
+            Capability::Process { pid, can_send: true, .. }
+            if *pid == target_pid
+        )
+    })
 }
 
 pub fn can_spawn(caps: &[CapabilityId]) -> bool {
@@ -83,6 +109,26 @@ pub fn can_spawn(caps: &[CapabilityId]) -> bool {
 /// Convenience: check if a cap set allows networking layer access.
 pub fn can_access_network(caps: &[CapabilityId]) -> bool {
     find_capability(caps, |c| matches!(c, Capability::Network))
+}
+
+/// Convenience: check if a cap set allows reading a file at `path`.
+pub fn can_read_file(caps: &[CapabilityId], path: &str) -> bool {
+    find_capability(caps, |c| {
+        matches!(c,
+            Capability::FileSystem { path_prefix, read: true, .. }
+            if path.starts_with(path_prefix.as_str())
+        )
+    })
+}
+
+/// Convenience: check if a cap set allows writing a file at `path`.
+pub fn can_write_file(caps: &[CapabilityId], path: &str) -> bool {
+    find_capability(caps, |c| {
+        matches!(c,
+            Capability::FileSystem { path_prefix, write: true, .. }
+            if path.starts_with(path_prefix.as_str())
+        )
+    })
 }
 
 /// Returns all resolved capabilities for debugging / display.

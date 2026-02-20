@@ -1,12 +1,12 @@
-use alloc::vec;
-use alloc::vec::Vec;
-use spin::Mutex;
-use smoltcp::phy::{Device, DeviceCapabilities, RxToken, TxToken, Medium};
-use smoltcp::time::Instant;
-use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 use crate::rtl8139::Rtl8139;
 use crate::serial_println;
+use alloc::vec;
+use alloc::vec::Vec;
+use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
+use smoltcp::time::Instant;
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address};
+use spin::Mutex;
 
 pub struct RxTokenWrapper(pub Vec<u8>);
 
@@ -39,7 +39,10 @@ impl Device for Rtl8139 {
     type RxToken<'a> = RxTokenWrapper;
     type TxToken<'a> = TxTokenWrapper<'a>;
 
-    fn receive<'a>(&'a mut self, _timestamp: Instant) -> Option<(Self::RxToken<'a>, Self::TxToken<'a>)> {
+    fn receive<'a>(
+        &'a mut self,
+        _timestamp: Instant,
+    ) -> Option<(Self::RxToken<'a>, Self::TxToken<'a>)> {
         match self.rx_poll() {
             Some(payload) => {
                 let rx = RxTokenWrapper(payload);
@@ -81,14 +84,19 @@ pub fn init(mut device: Rtl8139) {
     config.random_seed = 0x12345678; // Minimal hack for no_std PRNG randomness
 
     let mut iface = Interface::new(config, &mut device, Instant::from_millis(0));
-    
+
     // QEMU user networking assigns 10.0.2.15 to the guest by default in typical SLIRP,
     // but just assigning a static IP directly is fastest.
     iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs.push(IpCidr::new(IpAddress::v4(10, 0, 2, 15), 24)).unwrap();
+        ip_addrs
+            .push(IpCidr::new(IpAddress::v4(10, 0, 2, 15), 24))
+            .unwrap();
     });
-    
-    iface.routes_mut().add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2)).unwrap();
+
+    iface
+        .routes_mut()
+        .add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2))
+        .unwrap();
 
     let sockets = SocketSet::new(vec![]);
 
