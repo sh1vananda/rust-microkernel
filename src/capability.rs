@@ -13,6 +13,7 @@ pub enum Capability {
     Port    { port: u16 },
     Process { pid: u64, can_send: bool, can_receive: bool },
     Spawn   { max_children: u32 },
+    Network,
 }
 
 static CAPABILITY_STORE: Mutex<BTreeMap<CapabilityId, Capability>> = Mutex::new(BTreeMap::new());
@@ -75,9 +76,13 @@ pub fn can_send_to(caps: &[CapabilityId], target_pid: u64) -> bool {
     ))
 }
 
-/// Convenience: check if a cap set allows spawning child agents.
 pub fn can_spawn(caps: &[CapabilityId]) -> bool {
     find_capability(caps, |c| matches!(c, Capability::Spawn { .. }))
+}
+
+/// Convenience: check if a cap set allows networking layer access.
+pub fn can_access_network(caps: &[CapabilityId]) -> bool {
+    find_capability(caps, |c| matches!(c, Capability::Network))
 }
 
 /// Returns all resolved capabilities for debugging / display.

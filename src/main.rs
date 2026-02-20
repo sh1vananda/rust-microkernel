@@ -22,8 +22,21 @@ mod task;
 mod wasm;
 pub mod vfs;
 pub mod initramfs;
+pub mod pci;
+pub mod rtl8139;
+pub mod net;
 
 entry_point!(kernel_main);
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Print to both VGA screen and QEMU serial (stdout when -serial stdio).
+macro_rules! log {
+    ($($arg:tt)*) => {{
+        println!($($arg)*);
+        serial_println!($($arg)*);
+    }};
+}
 
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
     use memory::BootInfoFrameAllocator;
@@ -48,17 +61,21 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     capability::init();
     ipc::init();
 
+    log!("[SETUP] Scanning PCI buses...");
+    let devices = pci::scan_buses();
+    for dev in devices {
+        log!("  [PCI] Found Device {:04X}:{:04X} at {}:{}:{} (BAR0: {:#X})", dev.vendor_id, dev.device_id, dev.bus, dev.device, dev.function, dev.bar0);
+        
+        if dev.vendor_id == 0x10EC && dev.device_id == 0x8139 {
+            log!("  [NET] Initializing RTL8139 Driver...");
+            let io_base = (dev.bar0 & !3) as u16; // Port I/O addresses have lowest bits set as flags
+            let mut rtl = rtl8139::Rtl8139::new(io_base, boot_info.physical_memory_offset);
+            rtl.init();
+            net::init(rtl);
+        }
+    }
+
     run_wasm_demo();
-}
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/// Print to both VGA screen and QEMU serial (stdout when -serial stdio).
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        println!($($arg)*);
-        serial_println!($($arg)*);
-    }};
 }
 
 // ── Wasm Microvisor demo ───────────────────────────────────────────────────
@@ -89,9 +106,10 @@ fn run_wasm_demo() -> ! {
 
     log!("[SETUP] Spawning OpenClaw Core Agent...");
     
-    // Give the core agent capability to spawn other agents (skills)
+    // Give the core agent capability to spawn other agents (skills) and use the network
     let cap_spawn = create_capability(Capability::Spawn { max_children: 10 });
-    let core_agent = spawn_agent("openclaw_core", vec![cap_spawn]);
+    let cap_net = create_capability(Capability::Network);
+    let core_agent = spawn_agent("openclaw_core", vec![cap_spawn, cap_net]);
     let pid = task::agent_pid(core_agent);
 
     log!("  Agent 'openclaw_core' created with PID: {}", pid);

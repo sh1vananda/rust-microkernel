@@ -79,6 +79,52 @@ impl WasmRuntime {
             }
         })).map_err(|e| alloc::format!("Failed to define send_ipc: {e}"))?;
 
+        // Host Function: env.tcp_request(ip_ptr: u32, port: u32, payload_ptr: u32, len: u32) -> u32
+        linker.define("env", "tcp_request", wasmi::Func::wrap(&mut store, |mut caller: wasmi::Caller<'_, WasmState>, ip_ptr: u32, port: u32, ptr: u32, len: u32| -> Result<u32, Trap> {
+            let memory = get_memory(&mut caller)?;
+            
+            let agent_pid = caller.data().agent_pid;
+            let caps = agent_capabilities(AgentId(agent_pid));
+            
+            // SECURITY CHECK: Ensure Wasm Agent is granted the Network Capability!
+            if !crate::capability::can_access_network(&caps) {
+                serial_println!("[SECURITY] Agent {} denied network access", agent_pid);
+                return Ok(2); // Permission Denied
+            }
+
+            let mut ip_buf = [0u8; 4];
+            memory.read(&caller, ip_ptr as usize, &mut ip_buf).map_err(|_| Trap::from(HostError(String::from("IP read failed"))))?;
+            
+            let mut payload_buf = alloc::vec![0u8; len as usize];
+            memory.read(&caller, ptr as usize, &mut payload_buf).map_err(|_| Trap::from(HostError(String::from("Payload read failed"))))?;
+
+            serial_println!("[NET] Agent {} requesting TCP to {}.{}.{}.{}:{} (Payload: {} bytes)", 
+                agent_pid, ip_buf[0], ip_buf[1], ip_buf[2], ip_buf[3], port, len);
+
+            if let Some(ref mut net) = *crate::net::NETWORK.lock() {
+                use smoltcp::socket::tcp::{Socket, SocketBuffer};
+                use smoltcp::wire::IpAddress;
+                
+                let rx_buffer = SocketBuffer::new(alloc::vec![0; 1500]);
+                let tx_buffer = SocketBuffer::new(alloc::vec![0; 1500]);
+                let mut socket = Socket::new(rx_buffer, tx_buffer);
+                
+                let endpoint = (IpAddress::v4(ip_buf[0], ip_buf[1], ip_buf[2], ip_buf[3]), port as u16);
+                if socket.connect(net.iface.context(), endpoint, 49152).is_ok() {
+                    let mut handle = net.sockets.add(socket);
+                    
+                    // Force a poll to emit the bare-metal SYN frame!
+                    net.iface.poll(smoltcp::time::Instant::from_millis(1), &mut net.device, &mut net.sockets);
+                    serial_println!("  -> TCP SYN packet emitted to hardware DMA ring!");
+                    
+                    net.sockets.remove(handle);
+                    return Ok(0); // Queued successfully
+                }
+            }
+            
+            Ok(1) // Error
+        })).map_err(|e| alloc::format!("Failed to define tcp_request: {e}"))?;
+
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| alloc::format!("Failed to instantiate module: {e}"))?
