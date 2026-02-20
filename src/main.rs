@@ -20,6 +20,8 @@ mod capability;
 mod ipc;
 mod task;
 mod wasm;
+pub mod vfs;
+pub mod initramfs;
 
 entry_point!(kernel_main);
 
@@ -75,26 +77,15 @@ fn run_wasm_demo() -> ! {
     log!("[SETUP] Initializing Wasm Runtime...");
     let runtime = wasm::WasmRuntime::new();
 
-    // In a real environment, we would load the Wasm binary from a filesystem
-    // or via a network boot. For this POC, we use a simple compiled Wasm array.
-    // This dummy Wasm does roughly: 
-    //   (module
-    //     (import "env" "debug_log" (func $log (param i32 i32)))
-    //     (memory (export "memory") 1)
-    //     (data (i32.const 0) "Hello from Wasm Sandbox!")
-    //     (func (export "_start")
-    //       (call $log (i32.const 0) (i32.const 24))
-    //     )
-    //   )
-    let dummy_wasm: &[u8] = &[
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x00, 
-        0x60, 0x00, 0x00, 0x02, 0x13, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x09, 0x64, 0x65, 0x62, 0x75, 0x67, 
-        0x5f, 0x6c, 0x6f, 0x67, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x05, 0x06, 0x01, 0x01, 0x01, 0x01, 
-        0x01, 0x01, 0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x0a, 
-        0x01, 0x08, 0x00, 0x41, 0x00, 0x41, 0x18, 0x10, 0x00, 0x0b, 0x0b, 0x1f, 0x01, 0x00, 0x41, 0x00, 
-        0x0b, 0x18, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x66, 0x72, 0x6f, 0x6d, 0x20, 0x57, 0x61, 0x73, 
-        0x6d, 0x20, 0x53, 0x61, 0x6e, 0x64, 0x62, 0x6f, 0x78, 0x21,
-    ];
+    log!("[SETUP] Parsing Initramfs...");
+    let archive_bytes = include_bytes!("archive.tar");
+    match initramfs::init(archive_bytes) {
+        Ok(count) => log!("  Successfully mounted {} files from Initramfs.", count),
+        Err(e) => {
+            log!("[ERROR] Failed to parse Initramfs: {}", e);
+            panic!("Critical Boot Failure: VFS Initialization Failed.");
+        }
+    }
 
     log!("[SETUP] Spawning OpenClaw Core Agent...");
     
@@ -104,11 +95,26 @@ fn run_wasm_demo() -> ! {
     let pid = task::agent_pid(core_agent);
 
     log!("  Agent 'openclaw_core' created with PID: {}", pid);
-    log!("[EXEC] Executing Wasm binary...");
 
-    match runtime.execute_module(dummy_wasm, pid) {
-        Ok(_) => { log!("[EXEC] Module executed successfully."); }
-        Err(e) => { log!("[ERROR] Module execution failed: {}", e); }
+    let mut executed_count = 0;
+    let files = vfs::list_files();
+    
+    for filename in files {
+        if filename.ends_with(".wasm") {
+            log!("[EXEC] Found Wasm Agent: {}", filename);
+            if let Some(wasm_bytes) = vfs::open_file(&filename) {
+                log!("  Executing {}...", filename);
+                match runtime.execute_module(wasm_bytes, pid) {
+                    Ok(_) => { log!("  [SUCCESS] {} executed successfully.", filename); }
+                    Err(e) => { log!("  [ERROR] {} execution failed: {}", filename, e); }
+                }
+                executed_count += 1;
+            }
+        }
+    }
+
+    if executed_count == 0 {
+        log!("[WARN] No .wasm files found in the VFS.");
     }
 
     log!("");

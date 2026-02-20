@@ -35,6 +35,7 @@ impl WasmRuntime {
     }
 
     pub fn execute_module(&self, wasm_bytes: &[u8], agent_pid: u64) -> Result<(), String> {
+        serial_println!("[WASM] Engine compiling module of length: {}", wasm_bytes.len());
         let mut store = Store::new(&self.engine, WasmState { agent_pid });
         let module = Module::new(&self.engine, wasm_bytes)
             .map_err(|e| alloc::format!("Failed to compile module: {e}"))?;
